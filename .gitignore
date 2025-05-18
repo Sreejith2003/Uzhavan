@@ -1,0 +1,15 @@
+venv/
+env/
+ENV/
+host/
+__pychache__/
+*.pyc
+*.pyd
+*.dll
+*.lib
+*.so
+*.log
+*.mp3   
+*.mp4
+API_KEY.py
+app.log
