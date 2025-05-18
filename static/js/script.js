@@ -1,3 +1,4 @@
+// Updated js code
 console.log('script.js: Initializing...');
 
 let currentLanguage = 'en';
