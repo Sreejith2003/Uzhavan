@@ -1,4 +1,3 @@
-// Updated js code
 console.log('script.js: Initializing...');
 
 let currentLanguage = 'en';
@@ -7,16 +6,19 @@ let translations = {};
 async function loadTranslations() {
     console.log('Loading translations...');
     try {
-        const response = await fetch('/static/translations.json');
+        const response = await fetch('/translations.json');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         translations = await response.json();
         console.log('Translations loaded:', Object.keys(translations));
         updateUIText();
     } catch (error) {
         console.error('Error loading translations:', error);
         showToast('Failed to load translations - using default English');
-        translations = { 
+        translations = {
             en: {
-                appTitle: 'AgriBot - Smart Farming Assistant',
+                appTitle: 'Uzhavan - Smart Farming Assistant',
                 soilOption: 'Soil & Pest Detection',
                 cropOption: 'Crop & Irrigation Management',
                 aidOption: 'Government Aids',
@@ -48,19 +50,86 @@ async function loadTranslations() {
                     'Land Size': 'Land Size',
                     'Available Schemes': 'Available Schemes',
                     'Eligibility': 'Eligibility',
-                    'Contact': 'Contact'
+                    'Contact': 'Contact',
+                    'Note': 'Note',
+                    'acres': 'acres'
+                },
+                errorMessages: {
+                    noImage: 'Please select an image',
+                    soilAnalysis: 'Failed to analyze soil',
+                    network: 'Network error',
+                    invalidNumber: 'must be a valid number',
+                    rangeError: 'must be between',
+                    and: 'and',
+                    noCrops: 'No crops recommended',
+                    notSpecified: 'Not specified',
+                    notAvailable: 'Not available',
+                    invalidAidInput: 'Please fill all fields with a valid state and non-negative land size',
+                    noSchemes: 'No schemes found',
+                    schemesFailed: 'Failed to load government schemes',
+                    error: 'Error',
+                    unknown: 'Unknown'
+                },
+                successMessages: {
+                    soilAnalysis: 'Soil analysis completed!',
+                    cropRecommendation: 'Crop recommendation generated!',
+                    schemesLoaded: 'Government schemes loaded!'
                 }
-            } 
+            }
         };
+        // Dynamically translate UI labels for other languages
+        for (const lang of ['ta', 'ml', 'te', 'kn', 'hi']) {
+            translations[lang] = await fetchTranslations(lang);
+        }
         updateUIText();
     }
+}
+
+// Fetch UI translations dynamically from backend
+async function fetchTranslations(lang) {
+    if (lang === 'en') return translations.en;
+    try {
+        const response = await fetch('/api/translate_ui', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ language: lang, ui_text: translations.en })
+        });
+        const data = await response.json();
+        return data.translated_ui || translations.en;
+    } catch (error) {
+        console.error(`Error fetching translations for ${lang}:`, error);
+        return translations.en;
+    }
+}
+
+// Pass through backend-translated values
+function translatePredictionValue(category, value) {
+    if (!value) return translations[currentLanguage]?.errorMessages?.notAvailable || 'Not available';
+    // Backend sends translated text, so return as-is
+    return value;
+}
+
+// Pass through backend-translated dynamic text
+function translateDynamicText(text) {
+    if (!text) return translations[currentLanguage]?.errorMessages?.notAvailable || 'Not available';
+    // Backend sends translated text, so return as-is
+    return text;
+}
+
+// Update translatePestNote to use backend translations
+function translatePestNote(soilType, pests) {
+    const lang = translations[currentLanguage] || translations['en'] || {};
+    const template = lang.pest_note_template || 'This {soil_type} may have these pests: {pests}';
+    const translatedSoilType = translatePredictionValue('soil_type', soilType);
+    const translatedPests = pests.map(pest => translatePredictionValue('pest_detection', pest)).join(', ');
+    return template.replace('{soil_type}', translatedSoilType).replace('{pests}', translatedPests);
 }
 
 function updateUIText() {
     console.log('Updating UI for language:', currentLanguage);
     const lang = translations[currentLanguage] || translations['en'] || {};
     
-    document.getElementById('appTitle').textContent = lang.appTitle || 'AgriBot - Smart Farming Assistant';
+    document.getElementById('appTitle').textContent = lang.appTitle || 'Uzhavan - Smart Farming Assistant';
     document.getElementById('soilOption').textContent = lang.soilOption || 'Soil & Pest Detection';
     document.getElementById('cropOption').textContent = lang.cropOption || 'Crop & Irrigation Management';
     document.getElementById('aidOption').textContent = lang.aidOption || 'Government Aids';
@@ -108,7 +177,6 @@ function goBack() {
     document.getElementById('cropResult').innerHTML = '';
     document.getElementById('aidResult').innerHTML = '';
     
-    // Reset all forms
     const soilForm = document.getElementById('soilForm');
     const cropForm = document.getElementById('cropForm');
     const aidForm = document.getElementById('aidForm');
@@ -133,12 +201,10 @@ function changeLanguage() {
     updateUIText();
 }
 
-// Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM fully loaded');
     loadTranslations();
 
-    // Soil Form Submission Handler
     const soilForm = document.getElementById('soilForm');
     if (soilForm) {
         soilForm.addEventListener('submit', async (e) => {
@@ -148,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const soilImage = document.getElementById('soilImage').files[0];
 
             if (!soilImage) {
-                showToast('Please select an image');
+                showToast(translations[currentLanguage]?.errorMessages?.noImage || 'Please select an image');
                 return;
             }
 
@@ -168,25 +234,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('Soil Prediction Response:', data);
                 loading.style.display = 'none';
 
-            if (response.ok && data.success) {
-                resultDiv.innerHTML = `
-                    <div class="result">
-                        <div class="result-item"><span class="result-title">Soil Type:</span> ${data.data.soil_type}</div>
-                        <div class="result-item"><span class="result-title">Pest Detection:</span> ${data.data.pest_detection}</div>
-                    </div>
-                `;
-            } else {
-                console.log('Server error:', data);
-                resultDiv.innerHTML = <div class="error">Error: ${data.error || 'Failed to analyze soil'}</div>;
+                if (response.ok && data.success) {
+                    const translatedSoilType = translatePredictionValue('soil_type', data.data.soil_type);
+                    const translatedPests = data.data.pest_detection.map(pest => translatePredictionValue('pest_detection', pest));
+                    const translatedNote = translatePestNote(data.data.soil_type, data.data.pest_detection);
+                    resultDiv.innerHTML = `
+                        <div class="result">
+                            <div class="result-item">${translations[currentLanguage]?.resultFields?.['Soil Type'] || 'Soil Type'}: ${translatedSoilType}</div>
+                            <div class="result-item">${translations[currentLanguage]?.resultFields?.['Pest Detection'] || 'Pest Detection'}: ${translatedPests.join(', ')}</div>
+                            <div class="result-item">${translations[currentLanguage]?.resultFields?.['Note'] || 'Note'}: ${translatedNote}</div>
+                        </div>
+                    `;
+                    showToast(translations[currentLanguage]?.successMessages?.soilAnalysis || 'Soil analysis completed!');
+                } else {
+                    resultDiv.innerHTML = `<div class="error">${translations[currentLanguage]?.errorMessages?.error || 'Error'}: ${data.error || translations[currentLanguage]?.errorMessages?.soilAnalysis || 'Failed to analyze soil'}</div>`;
+                    showToast(translations[currentLanguage]?.errorMessages?.soilAnalysis || 'Failed to analyze soil');
+                }
+            } catch (error) {
+                console.error('Soil Prediction Error:', error);
+                loading.style.display = 'none';
+                resultDiv.innerHTML = `<div class="error">${translations[currentLanguage]?.errorMessages?.network || 'Network error'}: ${error.message}</div>`;
+                showToast(translations[currentLanguage]?.errorMessages?.network || 'Network error during soil analysis');
             }
-        } catch (error) {
-            console.error('Fetch error:', error);
-            loading.style.display = 'none';
-            resultDiv.innerHTML = <div class="error">Network error: ${error.message}</div>;
-        }
-    });
+        });
+    }
 
-    // Crop Form Submission Handler
     const cropForm = document.getElementById('cropForm');
     if (cropForm) {
         cropForm.addEventListener('submit', async (e) => {
@@ -218,22 +290,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 lang: currentLanguage
             };
 
-        // Input validation
-        if (!data.nitrogen || !data.phosphorus || !data.potassium || !data.temperature ||
-            !data.humidity || !data.ph || !data.rainfall || !data.soil_type) {
-            console.log('Missing crop form data');
-            showToast('Please fill all fields');
-            return;
-        }
-        if (data.nitrogen < 0 || data.phosphorus < 0 || data.potassium < 0 ||
-            data.temperature < -50 || data.temperature > 50 ||
-            data.humidity < 0 || data.humidity > 200 ||
-            data.ph < 0 || data.ph > 14 ||
-            data.rainfall < 0) {
-            console.log('Invalid crop form data');
-            showToast('Please enter valid values (e.g., positive numbers, pH 0-14)');
-            return;
-        }
+            const validationRules = {
+                nitrogen: { min: 0, max: 300, label: translations[currentLanguage]?.nitrogenLabel || 'Nitrogen' },
+                phosphorus: { min: 0, max: 300, label: translations[currentLanguage]?.phosphorusLabel || 'Phosphorus' },
+                potassium: { min: 0, max: 300, label: translations[currentLanguage]?.potassiumLabel || 'Potassium' },
+                temperature: { min: -50, max: 60, label: translations[currentLanguage]?.tempLabel || 'Temperature' },
+                humidity: { min: 0, max: 100, label: translations[currentLanguage]?.humidityLabel || 'Humidity' },
+                ph: { min: 0, max: 14, label: translations[currentLanguage]?.phLabel || 'pH' },
+                rainfall: { min: 0, max: 5000, label: translations[currentLanguage]?.rainfallLabel || 'Rainfall' }
+            };
+
+            const validationErrors = [];
+            for (const [field, value] of Object.entries(data)) {
+                const rule = validationRules[field];
+                if (rule) {
+                    if (isNaN(value)) {
+                        validationErrors.push(`${rule.label} ${translations[currentLanguage]?.errorMessages?.invalidNumber || 'must be a valid number'}`);
+                    } else if (value < rule.min || value > rule.max) {
+                        validationErrors.push(`${rule.label} ${translations[currentLanguage]?.errorMessages?.rangeError || 'must be between'} ${rule.min} ${translations[currentLanguage]?.errorMessages?.and || 'and'} ${rule.max}`);
+                    }
+                }
+            }
+
+            if (validationErrors.length > 0) {
+                showToast(validationErrors.join('; '));
+                console.error('Validation errors:', validationErrors);
+                return;
+            }
 
             console.log('Sending crop data:', JSON.stringify(data));
             loading.style.display = 'block';
@@ -249,31 +332,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('Crop response:', result);
                 loading.style.display = 'none';
 
-            if (response.ok) {
-                // Format crops into a single line (up to 4)
-                const cropsText = (result.crops || []).slice(0, 4).map(crop => 
-                    ${crop.crop} (${crop.probability}%)
-                ).join(', ');
-                
-                resultDiv.innerHTML = `
-                    <div class="result">
-                        <div class="result-item"><span class="result-title">Crop:</span> ${cropsText || 'No crops recommended'}</div>
-                        <div class="result-item"><span class="result-title">Irrigation:</span> ${result.irrigation || 'Not specified'}</div>
-                        <div class="result-item"><span class="result-title">Estimated Yield:</span> ${result.estimated_yield || 'Not available'}</div>
-                    </div>
-                `;
-            } else {
-                console.log('Server error:', result);
-                resultDiv.innerHTML = <div class="error">Error: ${result.error || 'Failed to recommend crop'}</div>;
-            }
-        } catch (error) {
-            console.error('Fetch error:', error);
-            loading.style.display = 'none';
-            resultDiv.innerHTML = <div class="error">Network error: ${error.message}</div>;
-        }
-    });
+                if (response.ok) {
+                    const cropsText = (result.crops || [])
+                        .slice(0, 4)
+                        .map(crop => `${translatePredictionValue('crops', crop.crop)} (${(crop.probability * 100).toFixed(1)}%)`)
+                        .join(', ');
+                    const translatedIrrigation = translatePredictionValue('irrigation', result.irrigation);
+                    const translatedEstimatedYield = translateDynamicText(result.estimated_yield);
+                    const translatedNote = translateDynamicText(result.note);
 
-    // Government Aid Form Submission Handler
+                    resultDiv.innerHTML = `
+                        <div class="result">
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Recommended Crops'] || 'Recommended Crops'}:</span> ${cropsText || translations[currentLanguage]?.errorMessages?.noCrops || 'No crops recommended'}</div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Irrigation Status'] || 'Irrigation Status'}:</span> ${translatedIrrigation || translations[currentLanguage]?.errorMessages?.notSpecified || 'Not specified'}</div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Estimated Yield'] || 'Estimated Yield'}:</span> ${translatedEstimatedYield}</div>
+                            ${translatedNote ? `<div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Note'] || 'Note'}:</span> ${translatedNote}</div>` : ''}
+                        </div>
+                    `;
+                    showToast(translations[currentLanguage]?.successMessages?.cropRecommendation || 'Crop recommendation generated!');
+                } else {
+                    throw new Error(result.error || `Server error (Status: ${response.status})`);
+                }
+            } catch (error) {
+                console.error('Crop form error:', error);
+                loading.style.display = 'none';
+                resultDiv.innerHTML = `<div class="error">${translations[currentLanguage]?.errorMessages?.error || 'Error'}: ${error.message}</div>`;
+                showToast(translations[currentLanguage]?.errorMessages?.cropRecommendation || 'Failed to generate crop recommendation');
+            }
+        });
+    }
+
     const aidForm = document.getElementById('aidForm');
     if (aidForm) {
         aidForm.addEventListener('submit', async (e) => {
@@ -287,7 +375,7 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             if (!data.state || isNaN(data.land_size) || data.land_size < 0) {
-                showToast('Please fill all fields with a valid state and non-negative land size');
+                showToast(translations[currentLanguage]?.errorMessages?.invalidAidInput || 'Please fill all fields with a valid state and non-negative land size');
                 return;
             }
 
@@ -305,24 +393,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('Received aid response:', result);
                 loading.style.display = 'none';
 
-            if (response.ok && result.success) {
-                resultDiv.innerHTML = `
-                    <div class="result">
-                        <div class="result-item"><span class="result-title">State:</span> ${result.data.state}</div>
-                        <div class="result-item"><span class="result-title">Land Size:</span> ${result.data.land_size} acres</div>
-                        <div class="result-item"><span class="result-title">Schemes:</span> ${result.data.available_schemes.join(', ')}</div>
-                        <div class="result-item"><span class="result-title">Eligibility:</span> ${result.data.eligibility}</div>
-                        <div class="result-item"><span class="result-title">Contact:</span> ${result.data.contact}</div>
-                    </div>
-                `;
-            } else {
-                console.log('Server error:', result);
-                resultDiv.innerHTML = <div class="error">Error: ${result.error || 'Failed to fetch schemes'}</div>;
+                if (response.ok && result.success) {
+                    const schemesHTML = (result.data.available_schemes || [])
+                        .map(s => `<li>${translatePredictionValue('schemes', s)}</li>`)
+                        .join('');
+                    const translatedEligibility = translateDynamicText(result.data.eligibility);
+                    const translatedContact = translateDynamicText(result.data.contact);
+
+                    resultDiv.innerHTML = `
+                        <div class="result">
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['State'] || 'State'}:</span> ${result.data.state}</div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Land Size'] || 'Land Size'}:</span> ${result.data.land_size} ${translations[currentLanguage]?.resultFields?.acres || 'acres'}</div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Available Schemes'] || 'Available Schemes'}:</span> <ul class="result-list">${schemesHTML}</ul></div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Eligibility'] || 'Eligibility'}:</span> ${translatedEligibility}</div>
+                            <div class="result-item"><span class="result-title">${translations[currentLanguage]?.resultFields?.['Contact'] || 'Contact'}:</span> ${translatedContact}</div>
+                        </div>
+                    `;
+                    showToast(translations[currentLanguage]?.successMessages?.schemesLoaded || 'Government schemes loaded!');
+                } else {
+                    resultDiv.innerHTML = `<div class="error">${translations[currentLanguage]?.errorMessages?.error || 'Error'}: ${result.error || translations[currentLanguage]?.errorMessages?.noSchemes || 'No schemes found'}</div>`;
+                    showToast(translations[currentLanguage]?.errorMessages?.schemesFailed || 'Failed to load government schemes');
+                }
+            } catch (error) {
+                console.error('Aid form error:', error);
+                loading.style.display = 'none';
+                resultDiv.innerHTML = `<div class="error">${translations[currentLanguage]?.errorMessages?.network || 'Network error'}: ${error.message}</div>`;
+                showToast(translations[currentLanguage]?.errorMessages?.network || 'Network error during scheme loading');
             }
-        } catch (error) {
-            console.error('Fetch error:', error);
-            loading.style.display = 'none';
-            resultDiv.innerHTML = <div class="error">Network error: ${error.message}</div>;
-        }
-    });
+        });
+    }
+
+    const languageSelect = document.getElementById('language');
+    if (languageSelect) {
+        languageSelect.addEventListener('change', changeLanguage);
+    }
 });

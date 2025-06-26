@@ -1,5 +1,3 @@
-# New code
-
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 import os
@@ -49,7 +47,7 @@ logging.basicConfig(
 # Initialize Flask app
 app = Flask(__name__, static_url_path='', static_folder='static', template_folder='templates')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', os.urandom(24).hex())
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # Allow all origins for API
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # --- MongoDB Configuration ---
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -60,18 +58,19 @@ if not MONGODB_URI:
 try:
     client = MongoClient(
         MONGODB_URI,
-        serverSelectionTimeoutMS=5000,  # 5 second timeout
+        serverSelectionTimeoutMS=5000,
         connectTimeoutMS=30000,
         socketTimeoutMS=30000
     )
-    # Test the connection
     client.admin.command('ping')
     db = client.UzhavanDB
     users_collection = db.users
+    translations_collection = db.translations
     logging.info("MongoDB connection successful")
 except Exception as e:
     logging.error(f"MongoDB connection failed: {str(e)}")
     users_collection = None
+    translations_collection = None
 
 # --- Directories ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,9 +80,10 @@ os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --- Model Paths ---
-SOIL_MODEL_PATH = os.path.join(BASE_DIR, "model", "efficientnet_soil (1).pth")
-CROP_MODEL_PATH = os.path.join(BASE_DIR, "model", "crop_model (2) (1).pkl")
-IRRIGATION_MODEL_PATH = os.path.join(BASE_DIR, "model", "irrigation_model (1).pkl")
+MODEL_DIR = os.path.join(BASE_DIR, 'model')
+SOIL_MODEL_PATH = os.path.join(MODEL_DIR, "efficientnet_soil (1).pth")
+CROP_MODEL_PATH = os.path.join(MODEL_DIR, "crop_model (2) (1).pkl")
+IRRIGATION_MODEL_PATH = os.path.join(MODEL_DIR, "irrigation_model (1).pkl")
 
 # Verify model files exist
 for path in [SOIL_MODEL_PATH, CROP_MODEL_PATH, IRRIGATION_MODEL_PATH]:
@@ -97,7 +97,7 @@ irrigation_classes = ["Very low", "Low", "Moderate", "High", "Very high"]
 # Define CustomEfficientNet
 class CustomEfficientNet(torch.nn.Module):
     def __init__(self):
-        super(CustomEfficientNet, self).__init__()
+        super(CustomEfficientNet, self).__init__() 
         base_model = efficientnet_b0(weights=None)
         self.features = base_model.features
         self.pooling = base_model.avgpool
@@ -126,14 +126,10 @@ transform = transforms.Compose([
 SUPPORTED_LANGUAGES = {
     'en': {'gtts': 'en', 'name': 'English'},
     'ta': {'gtts': 'ta', 'name': 'Tamil'},
-    'hi': {'gtts': 'hi', 'name': 'Hindi'},
+    'ml': {'gtts': 'ml', 'name': 'Malayalam'},
     'te': {'gtts': 'te', 'name': 'Telugu'},
     'kn': {'gtts': 'kn', 'name': 'Kannada'},
-    'ml': {'gtts': 'ml', 'name': 'Malayalam'},
-    'mr': {'gtts': 'mr', 'name': 'Marathi'},
-    'bn': {'gtts': 'bn', 'name': 'Bengali'},
-    'gu': {'gtts': 'gu', 'name': 'Gujarati'},
-    'pa': {'gtts': 'pa', 'name': 'Punjabi'}
+    'hi': {'gtts': 'hi', 'name': 'Hindi'}
 }
 
 # --- Gemini AI Integration ---
@@ -141,25 +137,18 @@ API_KEY_ROOT = os.path.join(BASE_DIR, "API_KEY.py")
 key = None
 
 try:
-    # Check if API_KEY.py exists in the root directory
     logging.info(f"Attempting to load API key from: {API_KEY_ROOT}")
     if not os.path.exists(API_KEY_ROOT):
         raise FileNotFoundError(f"API key file not found at '{API_KEY_ROOT}'")
-    
-    # Dynamically import the API_KEY module
     spec = importlib.util.spec_from_file_location("API_KEY", API_KEY_ROOT)
     if spec is None:
         raise ImportError(f"Failed to create spec for module at {API_KEY_ROOT}")
-    
     api_key_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(api_key_module)
-    
-    # Access the key variable
     key = getattr(api_key_module, 'key', None)
-    logging.info(f"Loaded key value: {'[REDACTED]' if key else 'None'}")  # Avoid logging the actual key
+    logging.info(f"Loaded key value: {'[REDACTED]' if key else 'None'}")
     if not key or not isinstance(key, str) or "YOUR_API_KEY" in key:
         raise ValueError(f"Invalid API key format: {key}")
-    
     logging.info(f"API key loaded successfully from {API_KEY_ROOT}")
 except Exception as e:
     logging.error(f"Error loading API key from API_KEY.py: {str(e)}")
@@ -183,12 +172,130 @@ else:
 
 # --- Helper Functions ---
 def validate_phone_number(phone_number):
-    """Validate phone number (10-digit Indian mobile number)."""
     pattern = r"^[6-9]\d{9}$"
     return bool(re.match(pattern, phone_number))
 
 def clean_text(text):
     return text.replace('*', '').strip() if text else text
+
+def cache_translation(text, source_lang, dest_lang, translated_text):
+    if translations_collection and text and translated_text:
+        try:
+            translations_collection.update_one(
+                {'text': text, 'source_lang': source_lang, 'dest_lang': dest_lang},
+                {'$set': {'translated_text': translated_text, 'timestamp': datetime.utcnow()}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error caching translation: {str(e)}")
+
+def get_cached_translation(text, source_lang, dest_lang):
+    if translations_collection and text:
+        try:
+            cached = translations_collection.find_one({
+                'text': text,
+                'source_lang': source_lang,
+                'dest_lang': dest_lang
+            })
+            if cached:
+                return cached['translated_text']
+        except Exception as e:
+            logging.error(f"Error retrieving cached translation: {str(e)}")
+    return None
+
+def translate_text(text, dest_lang='en'):
+    if not text or dest_lang == 'en':
+        return text
+    if dest_lang not in SUPPORTED_LANGUAGES:
+        logging.warning(f"Unsupported language for translation: {dest_lang}")
+        return text
+    if not gemini_model:
+        logging.error("Gemini model not available for translation")
+        return text
+    # Check cache first
+    cached = get_cached_translation(text, 'en', dest_lang)
+    if cached:
+        return cached
+    try:
+        prompt = (
+            f"Translate the following agricultural term or phrase to {SUPPORTED_LANGUAGES[dest_lang]['name']} "
+            "in a natural, accurate, and context-appropriate way for farmers in India. "
+            "For measurements like 'tons/ha', use a natural phrasing like 'tons per hectare' in the target language. "
+            "Return only the translated text without explanations, brackets, or additional context. "
+            f"Text: {text}"
+        )
+        response = gemini_model.generate_content(prompt)
+        if response.parts:
+            translated = clean_text("".join(part.text for part in response.parts))
+            cache_translation(text, 'en', dest_lang, translated)
+            return translated
+        return text
+    except Exception as e:
+        logging.error(f"Translation error ({dest_lang}): {str(e)}")
+        return text
+
+def translate_to_english(text, source_lang):
+    if source_lang == 'en' or not text:
+        return text
+    if source_lang not in SUPPORTED_LANGUAGES:
+        logging.warning(f"Unsupported source language: {source_lang}")
+        return text
+    if not gemini_model:
+        logging.error("Gemini model not available for translation")
+        return text
+    cached = get_cached_translation(text, source_lang, 'en')
+    if cached:
+        return cached
+    try:
+        prompt = (
+            f"Translate the following text from {SUPPORTED_LANGUAGES[source_lang]['name']} to English "
+            "in a natural and accurate way, suitable for agricultural contexts in India. "
+            "Return only the translated text without explanations or additional context. "
+            f"Text: {text}"
+        )
+        response = gemini_model.generate_content(prompt)
+        if response.parts:
+            translated = clean_text("".join(part.text for part in response.parts))
+            cache_translation(text, source_lang, 'en', translated)
+            return translated
+        return text
+    except Exception as e:
+        logging.error(f"Translation error from {source_lang}: {e}")
+        return text
+
+def translate_response(data, lang='en'):
+    if lang == 'en':
+        return data
+    try:
+        if isinstance(data, dict):
+            translated = {}
+            for k, v in data.items():
+                if k == 'crops' and isinstance(v, list):
+                    translated[k] = [
+                        {"crop": translate_text(item['crop'], lang), "probability": item['probability']}
+                        for item in v
+                    ]
+                elif k == 'crop' and isinstance(v, str):
+                    translated[k] = translate_text(v, lang)
+                elif k == 'irrigation' and isinstance(v, str):
+                    translated[k] = translate_text(v, lang)
+                elif k == 'estimated_yield' and isinstance(v, str):
+                    yield_value = v.split()[0] if ' ' in v else v
+                    translated[k] = translate_text(f"{yield_value} tons per hectare", lang)
+                elif k == 'note' and isinstance(v, str):
+                    translated[k] = translate_text(v, lang)
+                else:
+                    translated[k] = translate_response(v, lang)
+            return translated
+        elif isinstance(data, list):
+            return [translate_response(i, lang) for i in data]
+        elif isinstance(data, str):
+            return translate_text(data, lang)
+        else:
+            return str(data)
+    except Exception as e:
+        logging.error(f"Translation error in response ({lang}): {str(e)}")
+        return data
 
 def heuristic_pest_detection(soil_type):
     soil_type = soil_type.lower()
@@ -210,7 +317,7 @@ def heuristic_crop_recommendation(features, soil_type):
 
     crop_scores = {
         "rice": 0, "wheat": 0, "maize": 0, "sugarcane": 0, "cotton": 0,
-        "groundnut": 0, "barley": 0, "millet": 0, "Bats": 0, "sorghum": 0, "soybean": 0
+        "groundnut": 0, "barley": 0, "millet": 0, "sorghum": 0, "soybean": 0
     }
 
     soil_prefs = {
@@ -260,9 +367,7 @@ def check_irrigation_heuristic(crop, soil_type, features):
     crop_irrigation = {
         "rice": "high", "sugarcane": "high", "maize": "moderate", "wheat": "moderate",
         "cotton": "moderate", "groundnut": "low", "millet": "low", "barley": "low",
-        "sorghum": "low", "soybean": "moderate", "sunflower": "moderate", "lentil": "low",
-        "chickpea": "low", "pea": "low", "mustard": "low", "safflower": "low",
-        "sesame": "low", "jute": "high", "tobacco": "moderate"
+        "sorghum": "low", "soybean": "moderate"
     }
     soil_retention = {
         "clay": "high", "alluvial": "moderate", "black": "high", "red": "low"
@@ -300,7 +405,6 @@ def check_irrigation_heuristic(crop, soil_type, features):
 
 def check_irrigation(crop, soil_type, features):
     try:
-        # Load irrigation model on-demand
         logging.info(f"Loading irrigation model from {IRRIGATION_MODEL_PATH}")
         irrigation_model = joblib.load(IRRIGATION_MODEL_PATH)
         logging.info("Irrigation model loaded successfully")
@@ -322,9 +426,7 @@ def estimate_yield(crop, features):
     rainfall = features[6]
     base_yield = {
         "rice": 3.5, "wheat": 2.8, "maize": 2.2, "sugarcane": 6.5, "cotton": 1.5,
-        "groundnut": 1.2, "barley": 2.0, "millet": 1.8, "sorghum": 2.0, "soybean": 2.5,
-        "sunflower": 1.8, "lentil": 1.5, "chickpea": 1.6, "pea": 1.7, "mustard": 1.4,
-        "safflower": 1.3, "sesame": 1.2, "jute": 2.0, "tobacco": 2.2
+        "groundnut": 1.2, "barley": 2.0, "millet": 1.8, "sorghum": 2.0, "soybean": 2.5
     }
     crop = str(crop).lower()
     yield_value = base_yield.get(crop, 2.0)
@@ -334,44 +436,6 @@ def estimate_yield(crop, features):
         yield_value *= 0.8
     return float(round(yield_value, 2))
 
-def translate_text(text, dest_lang='en'):
-    if not text or dest_lang == 'en':
-        return text
-    if dest_lang not in SUPPORTED_LANGUAGES:
-        logging.warning(f"Unsupported language for translation: {dest_lang}")
-        return text
-    if not gemini_model:
-        logging.error("Gemini model not available for translation")
-        return text
-    try:
-        prompt = f"Translate the following text to {SUPPORTED_LANGUAGES[dest_lang]['name']}: {text}"
-        response = gemini_model.generate_content(prompt)
-        if response.parts:
-            return clean_text("".join(part.text for part in response.parts))
-        return text
-    except Exception as e:
-        logging.error(f"Translation error ({dest_lang}): {str(e)}")
-        return text
-
-def translate_to_english(text, source_lang_code):
-    if source_lang_code == 'en' or not text:
-        return text
-    if source_lang_code not in SUPPORTED_LANGUAGES:
-        logging.warning(f"Unsupported source language: {source_lang_code}")
-        return text
-    if not gemini_model:
-        logging.error("Gemini model not available for translation")
-        return text
-    try:
-        prompt = f"Translate the following text from {SUPPORTED_LANGUAGES[source_lang_code]['name']} to English: {text}"
-        response = gemini_model.generate_content(prompt)
-        if response.parts:
-            return clean_text("".join(part.text for part in response.parts))
-        return text
-    except Exception as e:
-        logging.error(f"Translation error from {source_lang_code}: {e}")
-        return text
-
 def get_gemini_response(query_en):
     if not query_en or len(query_en.strip()) < 2:
         return "Please provide a more detailed question."
@@ -380,11 +444,11 @@ def get_gemini_response(query_en):
         return "Chat service is currently unavailable due to missing API key."
 
     full_prompt = (
-        "You are an AI assistant. If the user asks about agriculture, farming, crops, soil, weather for farming, "
-        "or related topics, especially concerning Tamil Nadu, India, act as an agricultural expert providing detailed, practical advice. "
-        "For all other general knowledge queries, provide accurate and concise answers. "
-        "Format your response clearly and concisely. If applicable, use a numbered or bulleted list with roughly 4 main points or steps. "
-        "Avoid using asterisks (*) for formatting."
+        "You are an AI assistant for farmers in India. For queries about agriculture, farming, crops, soil, or weather, "
+        "provide detailed, practical advice in a clear and concise manner, tailored for Indian farmers. "
+        "For general knowledge queries, provide accurate and concise answers. "
+        "Format responses with 3-5 bullet points where applicable. "
+        "Avoid using asterisks (*) for formatting. "
         f"User query: {query_en}"
     )
 
@@ -396,22 +460,6 @@ def get_gemini_response(query_en):
     except Exception as e:
         logging.error(f"Gemini API error: {str(e)}")
         return "Sorry, I encountered an error processing your request."
-
-def translate_response(data, lang='en'):
-    if lang == 'en':
-        return data
-    try:
-        if isinstance(data, dict):
-            return {k: translate_response(v, lang) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [translate_response(i, lang) for i in data]
-        elif isinstance(data, str):
-            return translate_text(data, lang)
-        else:
-            return str(data)
-    except Exception as e:
-        logging.error(f"Translation error in response ({lang}): {str(e)}")
-        return data
 
 # --- Routes ---
 @app.route('/')
@@ -445,7 +493,6 @@ def register():
         phone_number = data.get('phone_number', '').strip()
         password = data.get('password', '').strip()
 
-        # Validate inputs
         if not all([full_name, phone_number, password]):
             return jsonify({'error': 'Full name, phone number, and password are required', "code": "MISSING_FIELDS"}), 400
 
@@ -455,7 +502,6 @@ def register():
         if email and not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
             return jsonify({'error': 'Invalid email format', "code": "INVALID_EMAIL"}), 400
 
-        # Check for existing phone number or email
         if users_collection.find_one({'phone_number': phone_number}):
             return jsonify({'error': 'Phone number already registered', "code": "PHONE_EXISTS"}), 409
         if email and users_collection.find_one({'email': email}):
@@ -501,7 +547,6 @@ def login():
         if phone_number and not validate_phone_number(phone_number):
             return jsonify({'error': 'Invalid phone number. Must be a 10-digit Indian mobile number starting with 6-9.', "code": "INVALID_PHONE_NUMBER"}), 400
 
-        # Find user by email or phone_number
         query = {'$or': []}
         if email:
             query['$or'].append({'email': email})
@@ -515,7 +560,6 @@ def login():
         if not bcrypt.checkpw(password.encode('utf-8'), user['password']):
             return jsonify({'error': 'Invalid credentials', "code": "INVALID_CREDENTIALS"}), 401
 
-        # Update last login time
         users_collection.update_one(
             {'_id': user['_id']},
             {'$set': {'last_login': datetime.utcnow()}}
@@ -544,7 +588,6 @@ def predict_soil():
         lang = "en"
 
     try:
-        # Load soil model on-demand
         logging.info(f"Loading soil model from {SOIL_MODEL_PATH}")
         soil_model = CustomEfficientNet()
         soil_model.load_state_dict(torch.load(SOIL_MODEL_PATH, map_location=torch.device('cpu')))
@@ -565,8 +608,6 @@ def predict_soil():
 
         soil_type = soil_classes[predicted]
         pest_detection, pest_note, pest_probability = heuristic_pest_detection(soil_type.lower())
-        pest_note = translate_text(pest_note, lang)
-
         response = {
             "success": True,
             "data": {
@@ -576,7 +617,7 @@ def predict_soil():
                 "pest_probability": pest_probability
             }
         }
-        return jsonify(response)
+        return jsonify(translate_response(response, lang))
     except Exception as e:
         logging.error(f"Error processing image: {str(e)}")
         return jsonify(translate_response({
@@ -595,13 +636,12 @@ def recommend_crop():
         return jsonify(translate_response({"error": "No data provided", "code": "NO_DATA"}, lang)), 400
 
     try:
-        # Load crop model on-demand
         logging.info(f"Loading crop model from {CROP_MODEL_PATH}")
         crop_model = joblib.load(CROP_MODEL_PATH)
         logging.info("Crop model loaded successfully")
     except Exception as e:
         logging.error(f"Error loading crop model: {str(e)}")
-        crop_model = None  # Ensure heuristic fallback
+        crop_model = None
 
     try:
         required_fields = ["nitrogen", "phosphorus", "potassium", "temperature", "humidity", "ph", "rainfall", "soil_type"]
@@ -757,13 +797,13 @@ def chat():
     if lang not in SUPPORTED_LANGUAGES:
         lang = 'en'
 
-    if message in ['video', 'show_video']:
-        video_filename = 'demo_video.mp4'
+    if message in ['video', 'show_video', 'crop cultivation video']:
+        video_filename = 'crop_cultivation_guide.mp4'
         video_path = os.path.join(VIDEO_DIR, video_filename)
         if os.path.exists(video_path):
             video_url = f'/videos/{video_filename}'
             return jsonify({
-                'response': translate_text('Here is the requested video.', lang),
+                'response': translate_text('Here is the crop cultivation video.', lang),
                 'language': lang,
                 'video_url': video_url
             })
@@ -853,7 +893,7 @@ def health():
         "irrigation_model": os.path.exists(IRRIGATION_MODEL_PATH),
         "gemini": bool(gemini_chat),
         "api_key": bool(key),
-        "mongodb": bool(users_collection)
+        "mongodb": bool(users_collection and translations_collection)
     }
     return jsonify(status)
 
@@ -887,5 +927,5 @@ def model_info():
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 1000))
     app.run(debug=True, host='0.0.0.0', port=port)
