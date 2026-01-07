@@ -10,6 +10,6 @@ __pychache__/
 *.so
 *.log
 *.mp3   
-
-API_KEY.py
+.env
 app.log
+.gitattributes/

@@ -133,34 +133,38 @@ SUPPORTED_LANGUAGES = {
 }
 
 # --- Gemini AI Integration ---
-API_KEY_ROOT = os.path.join(BASE_DIR, "API_KEY.py")
-key = None
-
-try:
-    logging.info(f"Attempting to load API key from: {API_KEY_ROOT}")
-    if not os.path.exists(API_KEY_ROOT):
-        raise FileNotFoundError(f"API key file not found at '{API_KEY_ROOT}'")
-    spec = importlib.util.spec_from_file_location("API_KEY", API_KEY_ROOT)
-    if spec is None:
-        raise ImportError(f"Failed to create spec for module at {API_KEY_ROOT}")
-    api_key_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(api_key_module)
-    key = getattr(api_key_module, 'key', None)
-    logging.info(f"Loaded key value: {'[REDACTED]' if key else 'None'}")
-    if not key or not isinstance(key, str) or "YOUR_API_KEY" in key:
-        raise ValueError(f"Invalid API key format: {key}")
-    logging.info(f"API key loaded successfully from {API_KEY_ROOT}")
-except Exception as e:
-    logging.error(f"Error loading API key from API_KEY.py: {str(e)}")
-    key = None
+# --- Gemini AI Integration (ENV based) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 gemini_model = None
 gemini_chat = None
 
-if key:
+if not GEMINI_API_KEY:
+    logging.warning("GEMINI_API_KEY not found in .env file")
+else:
     try:
-        genai.configure(api_key=key)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        genai.configure(api_key=GEMINI_API_KEY)
+
+        # ✅ safer model (flash models change often)
+        gemini_model = genai.GenerativeModel("models/gemini-1.5-pro")
+        gemini_chat = gemini_model.start_chat(history=[])
+
+        logging.info("Gemini API initialized successfully using .env")
+        logging.info(f"Gemini model in use: {gemini_model.model_name}")
+
+    except Exception as e:
+        logging.error(f"Error initializing Gemini: {str(e)}")
+        gemini_model = None
+        gemini_chat = None
+
+
+# gemini_model = None
+# gemini_chat = None
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel('gemini-2.5-flash')
         gemini_chat = gemini_model.start_chat(history=[])
         logging.info("Gemini API initialized successfully")
     except Exception as e:
