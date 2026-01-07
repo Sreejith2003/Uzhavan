@@ -10,6 +10,7 @@ __pychache__/
 *.so
 *.log
 *.mp3   
+*.env
 .env
 app.log
 .gitattributes/
